@@ -5,11 +5,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
+from pathlib import Path
 import tempfile
 from transformers import pipeline
 from pedalboard.io import AudioFile
 from pedalboard import Pedalboard, NoiseGate, Compressor, LowShelfFilter, Gain, HighpassFilter, HighShelfFilter
 import noisereduce as nr
+from emotion_blender import EmotionBlender
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 thonburian_path = os.path.join(current_dir, "thonburian-tts")
@@ -29,6 +31,52 @@ class TTSRequest(BaseModel):
     text: str
     voice: Optional[str] = None
     ref_text: Optional[str] = None
+    emotion: Optional[str] = "neutral"         # neutral/happiness/sadness/anger/frustration
+    gender: Optional[str] = "female"           # female/male
+    use_emotion_ref: Optional[bool] = False    # True = เปิด emotion mode
+    emotion_strength: Optional[float] = 0.5   # 0.0–1.0 ความแรงของ emotion effect
+
+
+class EmotionRefLibrary:
+    SUPPORTED_EMOTIONS = ["neutral", "happiness", "sadness", "anger", "frustration"]
+
+    def __init__(self, refs_dir: str):
+        self.refs_dir = Path(refs_dir)
+        available = self._scan()
+        print(f"EmotionRefLibrary loaded from: {self.refs_dir}")
+        print(f"  Available refs: {available}")
+
+    def _scan(self) -> list:
+        found = []
+        for emo in self.SUPPORTED_EMOTIONS:
+            for gender in ["female", "male"]:
+                p = self.refs_dir / emo / f"{gender}_best.wav"
+                if p.exists():
+                    found.append(f"{emo}/{gender}")
+        return found
+
+    def get_ref_path(self, emotion: str, gender: str = "female") -> Optional[str]:
+        """คืน path ของ emotion ref — None ถ้าไม่พบ"""
+        emotion = emotion.lower().strip()
+        gender = gender.lower().strip()
+        if emotion not in self.SUPPORTED_EMOTIONS:
+            print(f"[EmotionRefLibrary] Unknown emotion '{emotion}', falling back to neutral")
+            emotion = "neutral"
+        path = self.refs_dir / emotion / f"{gender}_best.wav"
+        if path.exists():
+            return str(path)
+        # fallback: ลอง gender อื่น
+        for fallback_gender in ["female", "male"]:
+            fb = self.refs_dir / emotion / f"{fallback_gender}_best.wav"
+            if fb.exists():
+                print(f"[EmotionRefLibrary] Fallback to {emotion}/{fallback_gender}")
+                return str(fb)
+        # fallback: neutral
+        neutral = self.refs_dir / "neutral" / "female_best.wav"
+        if neutral.exists():
+            print(f"[EmotionRefLibrary] Fallback to neutral/female")
+            return str(neutral)
+        return None
 
 # Constants
 CHECKPOINT = "hf://biodatlab/ThonburianTTS/megaF5/mega_f5_last.safetensors"
@@ -87,6 +135,14 @@ tts_pipeline = FlowTTSPipeline(
 )
 print("Models loaded successfully!")
 
+# โหลด Emotion Ref Library (ไม่ crash ถ้า assets ยังไม่พร้อม)
+emotion_lib = EmotionRefLibrary(
+    refs_dir=os.path.join(current_dir, "assets", "emotion_refs")
+)
+
+# EmotionBlender — ปรับ prosody ของ user audio
+emotion_blender = EmotionBlender()
+
 def post_process_output(audio_path: str) -> None:
     """
     Post-process TTS output audio in-place.
@@ -119,52 +175,82 @@ def post_process_output(audio_path: str) -> None:
 @app.post('/generate-tts')
 async def generate_tts(data: TTSRequest):
     gen_text = data.text
-    
+
     if not gen_text:
         raise HTTPException(status_code=400, detail="Missing 'text' parameter in JSON body")
 
-    voice_file = data.voice
-    
-    if voice_file:
-        if os.path.isabs(voice_file):
-            ref_audio_path = voice_file
-        else:
-            ref_audio_path = os.path.join(current_dir, "thonburian-tts", "assets", voice_file)
-    else:
-        ref_audio_path = os.path.join(current_dir, "thonburian-tts", "assets", "000000.wav")
-    
-    if not os.path.exists(ref_audio_path):
-        raise HTTPException(status_code=404, detail=f"Voice file not found: {ref_audio_path}")
-
-    # ===== ENHANCE AUDIO =====
     temp_dir = tempfile.mkdtemp()
-    enhanced_audio_path = os.path.join(temp_dir, "enhanced_ref.wav")
-    
-    try:
-        print(f"Enhancing audio for: {ref_audio_path}")
-        sr = 44100
-        with AudioFile(ref_audio_path).resampled_to(sr) as f:
-            audio = f.read(f.frames)
 
-        reduced_noise = nr.reduce_noise(y=audio, sr=sr, stationary=True, prop_decrease=0.3)
+    # ===== หา user voice path =====
+    voice_file = data.voice
+    if voice_file:
+        user_voice_path = voice_file if os.path.isabs(voice_file) else \
+            os.path.join(current_dir, "thonburian-tts", "assets", voice_file)
+    else:
+        user_voice_path = os.path.join(current_dir, "thonburian-tts", "assets", "000000.wav")
 
-        board = Pedalboard([
-            NoiseGate(threshold_db=-40, ratio=1.2, release_ms=400),
-            Compressor(threshold_db=-12, ratio=2),
-            LowShelfFilter(cutoff_frequency_hz=300.0, gain_db=1.0, q=0.7),
-            Gain(gain_db=3)
-        ])
+    if not os.path.exists(user_voice_path):
+        raise HTTPException(status_code=404, detail=f"Voice file not found: {user_voice_path}")
 
-        effected = board(reduced_noise, sr)
+    # ===== EMOTION BLEND MODE =====
+    # มี user voice + เปิด emotion → blend prosody ของ user ก่อนส่ง F5
+    if data.use_emotion_ref and data.emotion != "neutral":
+        try:
+            print(f"[Emotion blend] emotion={data.emotion} strength={data.emotion_strength}")
+            blended_audio, blended_sr = emotion_blender.blend(
+                user_audio_path=user_voice_path,
+                emotion=data.emotion,
+                strength=data.emotion_strength,
+            )
+            blended_path = os.path.join(temp_dir, "blended_ref.wav")
+            emotion_blender.save(blended_audio, blended_sr, blended_path)
+            ref_audio_path = blended_path
+        except Exception as e:
+            print(f"[Emotion blend] failed: {e}. Falling back to user voice.")
+            ref_audio_path = user_voice_path
 
-        with AudioFile(enhanced_audio_path, 'w', sr, effected.shape[0]) as f:
-            f.write(effected)
-            
-        ref_audio_path = enhanced_audio_path
-        print(f"Audio enhanced and saved to {enhanced_audio_path}")
-    except Exception as e:
-        print(f"Audio enhancement failed: {str(e)}. Proceeding with original audio.")
-    # =========================
+    # ===== PURE EMOTION REF MODE (ไม่มี voice / neutral) =====
+    elif data.use_emotion_ref:
+        emotion_ref_path = emotion_lib.get_ref_path(data.emotion, data.gender)
+        if not emotion_ref_path:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Emotion ref not found for emotion='{data.emotion}' gender='{data.gender}'. "
+                       "Run scripts/prepare_emotion_refs.py first."
+            )
+        ref_audio_path = emotion_ref_path
+        print(f"[Pure emotion ref] Using: {ref_audio_path}")
+
+    # ===== NORMAL VOICE MODE =====
+    else:
+        ref_audio_path = user_voice_path
+        # ===== ENHANCE AUDIO (normal mode only) =====
+        enhanced_audio_path = os.path.join(temp_dir, "enhanced_ref.wav")
+        try:
+            print(f"Enhancing audio for: {ref_audio_path}")
+            sr = 44100
+            with AudioFile(ref_audio_path).resampled_to(sr) as f:
+                audio = f.read(f.frames)
+
+            reduced_noise = nr.reduce_noise(y=audio, sr=sr, stationary=True, prop_decrease=0.3)
+
+            board = Pedalboard([
+                NoiseGate(threshold_db=-40, ratio=1.2, release_ms=400),
+                Compressor(threshold_db=-12, ratio=2),
+                LowShelfFilter(cutoff_frequency_hz=300.0, gain_db=1.0, q=0.7),
+                Gain(gain_db=3)
+            ])
+
+            effected = board(reduced_noise, sr)
+
+            with AudioFile(enhanced_audio_path, 'w', sr, effected.shape[0]) as f:
+                f.write(effected)
+
+            ref_audio_path = enhanced_audio_path
+            print(f"Audio enhanced → {enhanced_audio_path}")
+        except Exception as e:
+            print(f"Audio enhancement failed: {str(e)}. Proceeding with original audio.")
+        # ==========================================
 
     ref_text = data.ref_text
 
