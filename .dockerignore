@@ -1,0 +1,11 @@
+venv/
+.git/
+__pycache__/
+*.pyc
+temp_f5/
+.ipynb_checkpoints/
+*.ipynb
+ThonburianTTS_Demo.ipynb
+default_voice.wav
+default_voice_enhanced.wav
+report.txt

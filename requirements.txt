@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+f5-tts
+sounddevice
+wavio
+ipywebrtc
+notebook
+ffmpeg
+torch
+torchvision
+noisereduce
+pedalboard
+librosa
+soundfile

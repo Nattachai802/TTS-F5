@@ -1,0 +1,22 @@
+
+#venv
+venv
+
+# Python Cache
+__pycache__/
+*.pyc
+
+# IDEs & System files
+.vscode/
+.DS_Store
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Audio outputs & Temporary directories
+*.wav
+temp_f5/
+report.txt
+
+# External repositories
+thonburian-tts/
