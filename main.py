@@ -232,13 +232,14 @@ async def generate_tts(data: TTSRequest):
             with AudioFile(ref_audio_path).resampled_to(sr) as f:
                 audio = f.read(f.frames)
 
-            reduced_noise = nr.reduce_noise(y=audio, sr=sr, stationary=True, prop_decrease=0.3)
+            reduced_noise = nr.reduce_noise(y=audio, sr=sr, stationary=True, prop_decrease=0.75)
 
             board = Pedalboard([
-                NoiseGate(threshold_db=-40, ratio=1.2, release_ms=400),
-                Compressor(threshold_db=-12, ratio=2),
-                LowShelfFilter(cutoff_frequency_hz=300.0, gain_db=1.0, q=0.7),
-                Gain(gain_db=3)
+                HighpassFilter(cutoff_frequency_hz=80.0),                                        # ตัด sub-bass rumble
+                NoiseGate(threshold_db=-35, ratio=2.5, release_ms=200),                         # gate แน่นขึ้น
+                Compressor(threshold_db=-14, ratio=2.5, attack_ms=10.0, release_ms=150.0),
+                LowShelfFilter(cutoff_frequency_hz=300.0, gain_db=-3.0, q=0.7),                 # cut low end แทน boost
+                Gain(gain_db=2)
             ])
 
             effected = board(reduced_noise, sr)
