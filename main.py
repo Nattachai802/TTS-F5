@@ -33,6 +33,7 @@ class TTSRequest(BaseModel):
     text: str
     voice: Optional[str] = None
     ref_text: Optional[str] = None
+    speed: Optional[float] = 1.0
 
 
 
@@ -211,14 +212,61 @@ async def generate_tts(data: TTSRequest):
 
     try:
         print(f"Generating TTS for text: '{gen_text}'")
-        tts_pipeline(
-            text=gen_text,
-            ref_voice=ref_audio_path,
-            ref_text=ref_text,
-            output_file=output_audio_path,
-            speed=1.0,
-            check_duration=True
-        )
+        
+        # Split text by [pause]
+        text_segments = [s.strip() for s in gen_text.split("[pause]") if s.strip()]
+        inference_speed = data.speed if data.speed is not None else 1.0
+        
+        if len(text_segments) <= 1:
+            tts_pipeline(
+                text=gen_text,
+                ref_voice=ref_audio_path,
+                ref_text=ref_text,
+                output_file=output_audio_path,
+                speed=inference_speed,
+                check_duration=True
+            )
+        else:
+            import numpy as np
+            combined_audio = None
+            sr = 24000
+            
+            for i, seg in enumerate(text_segments):
+                seg_path = os.path.join(temp_dir, f"seg_{i}.wav")
+                if not seg.endswith(('.', '!', '?', '。')):
+                    seg += '.'
+                
+                # Prevent voice slowdown (0.3 speed override) for short segments
+                if len(seg.encode("utf-8")) < 12:
+                    seg = seg + "   "
+                
+                tts_pipeline(
+                    text=seg,
+                    ref_voice=ref_audio_path,
+                    ref_text=ref_text,
+                    output_file=seg_path,
+                    speed=inference_speed,
+                    check_duration=False
+                )
+                
+                with AudioFile(seg_path).resampled_to(sr) as f:
+                    audio_data = f.read(f.frames)
+                
+                if combined_audio is None:
+                    combined_audio = audio_data
+                else:
+                    # Insert 300ms of silence between segments
+                    silence_samples = int(0.3 * sr)
+                    if audio_data.ndim == 1:
+                        silence = np.zeros(silence_samples, dtype=np.float32)
+                        combined_audio = np.concatenate([combined_audio, silence, audio_data])
+                    else:
+                        silence = np.zeros((audio_data.shape[0], silence_samples), dtype=np.float32)
+                        combined_audio = np.concatenate([combined_audio, silence, audio_data], axis=1)
+            
+            with AudioFile(output_audio_path, 'w', sr, combined_audio.shape[0]) as f:
+                f.write(combined_audio)
+                
         post_process_output(output_audio_path)
         return FileResponse(output_audio_path, media_type='audio/wav', filename="generated.wav")
     except Exception as e:

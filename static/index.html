@@ -49,6 +49,14 @@
                     <div class="char-counter"><span id="char-count">0</span>/500</div>
                 </div>
 
+                <div class="form-group border-top">
+                    <label for="speech-speed" class="slider-label" style="display: flex; justify-content: space-between; font-size: 0.8rem; font-weight: 600; color: var(--text-muted);">
+                        <span>Speech Speed (ความเร็วเสียง)</span>
+                        <span id="speed-value" style="font-weight: bold; color: var(--primary);">1.00x</span>
+                    </label>
+                    <input type="range" id="speech-speed" min="0.8" max="1.5" step="0.05" value="1.00" style="width: 100%; cursor: pointer;" oninput="document.getElementById('speed-value').textContent = parseFloat(this.value).toFixed(2) + 'x'">
+                </div>
+
                 <div class="form-group">
                     <label>Reference Voice Source</label>
                     <!-- Tabs for Selecting Reference Audio Source -->

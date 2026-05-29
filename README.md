@@ -1,202 +1,99 @@
-# TTS-F5 — Thai Text-to-Speech API with Emotion Control
+# TTS-F5 — Thai Text-to-Speech API with Voice Cloning
 
-Thai TTS API built on [ThonburianTTS](https://github.com/biodatlab/thonburian-tts) (F5-TTS) with voice cloning and emotion blending support.
-
----
-
-## Features
-
-- 🎙️ **Voice Cloning** — clone any Thai speaker from a short audio clip
-- 😊 **Emotion Control** — adjust prosody (pitch + speed) to convey happiness, sadness, anger, frustration
-- 🔇 **Auto Noise Reduction** — pedalboard + noisereduce pipeline on input ref audio
-- 🚀 **FastAPI** — REST endpoint, returns `.wav` file directly
+ระบบสังเคราะห์เสียงภาษาไทย (Thai TTS) พัฒนาบนพื้นฐานของ [ThonburianTTS](https://github.com/biodatlab/thonburian-tts) (F5-TTS) รองรับการโคลนเสียง (Voice Cloning) และระบบตัดเสียงรบกวนอัตโนมัติ พร้อมด้วยหน้าจอ Web UI สำเร็จรูป
 
 ---
 
-## Requirements
+## ฟีเจอร์หลัก (Features)
+
+- 🎙️ **Voice Cloning** — โคลนเสียงภาษาไทยจากไฟล์เสียงอ้างอิงความยาวสั้น ๆ (WAV)
+- 🔇 **Auto Noise Reduction** — ระบบลดเสียงรบกวนและปรับแต่ง EQ อัตโนมัติด้วย Pedalboard + Noisereduce ก่อนนำเสียงไปโคลน
+- 🌐 **Modern Web UI** — หน้าจอเว็บใช้งานง่าย สำหรับกรอกข้อความ อัปโหลดไฟล์เสียงอ้างอิง และกดทดลองฟังเสียงที่สร้างเสร็จ
+- 🚀 **FastAPI Backend** — ส่งผ่าน REST API รองรับการนำไปเชื่อมต่อกับระบบอื่น ๆ
+
+---
+
+## ความต้องการของระบบ (Requirements)
 
 - Python 3.10+
-- ffmpeg (system)
-- CUDA GPU (recommended) or Apple MPS or CPU
+- FFmpeg (ติดตั้งในระดับ OS)
+- CUDA GPU (แนะนำสำหรับการทำงานแบบ Real-time) หรือ Apple Silicon (MPS) หรือ CPU
 
 ---
 
-## Installation
+## วิธีการติดตั้งและรันใช้งาน (Installation & Setup)
 
-### 1. Clone this repo
-
+### 1. โคลนโปรเจกต์
 ```bash
 git clone https://github.com/Nattachai802/TTS-F5.git
 cd TTS-F5
 ```
 
-### 2. Clone ThonburianTTS (required)
-
+### 2. โคลนโปรเจกต์ ThonburianTTS (จำเป็น)
 ```bash
 git clone https://github.com/biodatlab/thonburian-tts.git
 ```
 
-### 3. Create virtual environment
-
+### 3. สร้าง Virtual Environment
 ```bash
-python -m venv venv
-source venv/bin/activate      # macOS / Linux
-# venv\Scripts\activate       # Windows
+python3 -m venv venv
+source venv/bin/activate      # สำหรับ macOS / Linux
+# venv\Scripts\activate       # สำหรับ Windows
 ```
 
-### 4. Install dependencies
-
+### 4. ติดตั้ง Dependencies
 ```bash
 pip install -r requirements.txt
 ```
+*(หมายเหตุ: หากต้องการรันผ่าน GPU แนะนำให้ติดตั้ง PyTorch เวอร์ชันที่ตรงกับ CUDA บนเครื่องของคุณก่อน)*
 
-> **macOS (Apple Silicon):** torch จะใช้ MPS โดยอัตโนมัติ  
-> **Linux + NVIDIA GPU:** ติดตั้ง torch ที่ตรงกับ CUDA version ก่อน
-
-### 5. Prepare emotion ref audio (ครั้งแรกเท่านั้น)
-
-ดึงไฟล์อ้างอิงอารมณ์จาก THAI-SER dataset (streaming — ไม่โหลดทั้งหมด ~12GB):
-
-```bash
-pip install datasets   # ถ้ายังไม่ได้ติดตั้ง
-python scripts/prepare_emotion_refs.py
-```
-
-Script จะสร้างไฟล์ที่ `assets/emotion_refs/` ประมาณ 10 ไฟล์ (5 อารมณ์ × 2 เพศ)  
-ใช้เวลาประมาณ 5–15 นาที ขึ้นกับความเร็ว internet
-
-### 6. Run the API
-
+### 5. สตาร์ทระบบ
 ```bash
 python main.py
 ```
-
-API จะพร้อมใช้งานที่ `http://localhost:5000`
-
----
-
-## Docker
-
-```bash
-# Build & run (ต้องมี NVIDIA GPU + nvidia-container-toolkit)
-docker compose up --build
-```
+*ระบบจะเปิดทำงานที่ `http://localhost:5000` โดยคุณสามารถเข้าใช้งานผ่านหน้าจอ Web UI หรือเรียกใช้ผ่าน API ก็ได้*
 
 ---
 
-## API Usage
+## วิธีการใช้ผ่าน API (API Usage)
 
 ### Endpoint
-
-```
+```http
 POST /generate-tts
 Content-Type: application/json
 ```
 
-### Request Fields
-
+### รายละเอียด Request Body
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `text` | string | required | ข้อความภาษาไทยที่ต้องการสังเคราะห์ |
-| `voice` | string | `null` | path ไปยัง ref audio ของ user (ถ้าไม่ระบุ ใช้ default voice) |
-| `ref_text` | string | `null` | คำพูดใน ref audio (ถ้าไม่ระบุ จะ transcribe อัตโนมัติ) |
-| `emotion` | string | `"neutral"` | อารมณ์: `neutral` / `happiness` / `sadness` / `anger` / `frustration` |
-| `gender` | string | `"female"` | เพศของ emotion ref fallback: `female` / `male` |
-| `use_emotion_ref` | bool | `false` | เปิด emotion mode |
-| `emotion_strength` | float | `0.5` | ความแรงของ emotion effect (0.0–1.0) |
+| `text` | string | (บังคับ) | ข้อความภาษาไทยที่ต้องการให้ระบบสังเคราะห์เสียง |
+| `voice` | string | `null` | Path ของไฟล์เสียงอ้างอิง (ถ้าเป็น `null` จะใช้เสียงดีฟอลต์ `000000.wav`) |
+| `ref_text` | string | `null` | ข้อความพูดในไฟล์เสียงอ้างอิง (ถ้าเป็น `null` ระบบจะทำ Automatic Transcription ด้วย Whisper ให้เอง) |
 
-### Examples
-
-**Normal (clone default voice):**
-```bash
-curl -X POST http://localhost:5000/generate-tts \
-  -H "Content-Type: application/json" \
-  -d '{"text": "สวัสดีครับ วันนี้อากาศดีมากเลยนะครับ"}' \
-  --output output.wav
-```
-
-**Emotion mode (ใช้เสียง default + อารมณ์ดีใจ):**
+### ตัวอย่างคำสั่ง Curl
 ```bash
 curl -X POST http://localhost:5000/generate-tts \
   -H "Content-Type: application/json" \
   -d '{
     "text": "สวัสดีครับ วันนี้อากาศดีมากเลยนะครับ",
-    "emotion": "happiness",
-    "use_emotion_ref": true,
-    "emotion_strength": 0.6
-  }' \
-  --output output.wav
-```
-
-**Clone เสียงของ user + อารมณ์:**
-```bash
-curl -X POST http://localhost:5000/generate-tts \
-  -H "Content-Type: application/json" \
-  -d '{
-    "text": "สวัสดีครับ วันนี้อากาศดีมากเลยนะครับ",
-    "voice": "/absolute/path/to/my_voice.wav",
-    "emotion": "sadness",
-    "use_emotion_ref": true,
-    "emotion_strength": 0.5
+    "voice": "/absolute/path/to/my_voice.wav"
   }' \
   --output output.wav
 ```
 
 ---
 
-## Emotion Mode — How it works
-
-```
-use_emotion_ref = true  +  emotion ≠ neutral
-        │
-        ▼
-EmotionBlender.blend(user_voice, emotion, strength)
-   → pitch shift + time stretch บน user audio
-        │
-        ▼
-F5-TTS clone timbre จาก user audio ที่ถูก adjust แล้ว
-        │
-        ▼
-Output = เสียงของ user + prosody ของอารมณ์นั้น
-```
-
-### Emotion presets
-
-| Emotion | Pitch shift | Speed |
-|---|---|---|
-| neutral | 0 semitones | 1.00× |
-| happiness | +2.5 semitones | 1.08× |
-| anger | +2.0 semitones | 1.12× |
-| sadness | −2.0 semitones | 0.86× |
-| frustration | +0.8 semitones | 1.04× |
-
----
-
-## Project Structure
+## โครงสร้างโปรเจกต์ (Project Structure)
 
 ```
 TTS-F5/
-├── main.py                  # FastAPI app
-├── emotion_blender.py       # Prosody adjustment (pitch/speed)
-├── requirements.txt
-├── Dockerfile
-├── docker-compose.yml
-├── assets/
-│   └── emotion_refs/        # THAI-SER ref audio (สร้างโดย prepare script)
-│       ├── neutral/
-│       ├── happiness/
-│       ├── sadness/
-│       ├── anger/
-│       └── frustration/
-├── scripts/
-│   └── prepare_emotion_refs.py  # ดึง THAI-SER emotion ref audio
-└── thonburian-tts/          # ThonburianTTS repo (clone แยก)
+├── main.py                  # ไฟล์หลักของ FastAPI Backend
+├── requirements.txt         # ไฟล์รายการ Python dependencies
+├── Dockerfile               # สำหรับสร้าง Docker Image
+├── docker-compose.yml       # สำหรับรันบริการด้วย Docker Compose
+├── static/                  # ไฟล์ UI (HTML, CSS, JS) ของหน้าเว็บ
+│   ├── index.html
+│   ├── style.css
+│   └── app.js
+└── thonburian-tts/          # โค้ดของโมเดล F5-TTS (โคลนมาแยกต่างหาก)
 ```
-
----
-
-## Credits
-
-- **ThonburianTTS / F5-TTS**: [biodatlab](https://github.com/biodatlab/thonburian-tts)
-- **THAI-SER Dataset**: [VISTEC-AI](https://github.com/vistec-AI/dataset-releases)
-- **Whisper (Thai)**: [biodatlab/whisper-th-medium-combined](https://huggingface.co/biodatlab/whisper-th-medium-combined)

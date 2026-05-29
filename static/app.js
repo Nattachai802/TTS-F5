@@ -352,10 +352,12 @@ async function startGeneration() {
     }, 11000);
 
     try {
+        const speedVal = parseFloat(document.getElementById('speech-speed').value);
         const payload = {
             text: textVal,
             voice: voicePath,
-            ref_text: referenceText
+            ref_text: referenceText,
+            speed: speedVal
         };
 
         const response = await fetch('/generate-tts', {
