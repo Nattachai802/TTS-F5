@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Thonburian F5-TTS - Premium Voice Cloner</title>
+    <meta name="description" content="A state-of-the-art Thai voice cloning and text-to-speech platform powered by F5-TTS and Whisper models.">
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="glass-bg-blobs">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+        <div class="blob blob-3"></div>
+    </div>
+
+    <div class="app-container">
+        <header class="app-header">
+            <div class="logo-area">
+                <i class="fa-solid fa-wand-magic-sparkles logo-icon"></i>
+                <div>
+                    <h1 id="app-title">Thonburian F5-TTS</h1>
+                    <p class="subtitle">Premium Voice Cloning & Synthesis Engine</p>
+                </div>
+            </div>
+            <div class="status-badge" id="system-status">
+                <span class="pulse-dot"></span>
+                <span>System Ready</span>
+            </div>
+        </header>
+
+        <main class="app-main">
+            <!-- Left Side: Configuration and Input -->
+            <section class="panel-card config-panel" aria-labelledby="input-config-title">
+                <div class="panel-header">
+                    <i class="fa-solid fa-sliders header-icon"></i>
+                    <h2 id="input-config-title">Configure Generation</h2>
+                </div>
+
+                <div class="form-group">
+                    <label for="tts-text">Target Script (Text to Generate)</label>
+                    <textarea id="tts-text" placeholder="พิมพ์ข้อความที่ต้องการให้สังเคราะห์เสียงที่นี่... (เช่น ยินดีด้วยนะ ได้ยินข่าวดีเรื่องนี้แล้วฉันมีความสุขจริงๆ!)" rows="4" maxlength="500"></textarea>
+                    <div class="char-counter"><span id="char-count">0</span>/500</div>
+                </div>
+
+                <div class="form-group">
+                    <label>Reference Voice Source</label>
+                    <!-- Tabs for Selecting Reference Audio Source -->
+                    <div class="tabs-container">
+                        <button type="button" class="tab-btn active" id="tab-presets-btn" onclick="switchTab('presets')">
+                            <i class="fa-solid fa-music"></i> Presets
+                        </button>
+                        <button type="button" class="tab-btn" id="tab-upload-btn" onclick="switchTab('upload')">
+                            <i class="fa-solid fa-cloud-arrow-up"></i> Upload File
+                        </button>
+
+                    </div>
+
+                    <!-- Tab Contents -->
+                    <div class="tab-panels">
+                        <!-- Presets Tab -->
+                        <div class="tab-panel active" id="panel-presets">
+                            <div class="presets-selector">
+                                <label for="preset-emotion">Select Emotion</label>
+                                <select id="preset-emotion" onchange="loadPresetGenderOptions()">
+                                    <option value="neutral">Neutral (ปกติ)</option>
+                                    <option value="happiness">Happiness (มีความสุข)</option>
+                                    <option value="sadness">Sadness (เศร้า)</option>
+                                    <option value="anger">Anger (โกรธ)</option>
+                                    <option value="frustration">Frustration (หงุดหงิด)</option>
+                                </select>
+
+                                <label for="preset-voice">Select Speaker</label>
+                                <select id="preset-voice" onchange="updatePresetPreview()">
+                                    <!-- Dynamic Options from JS -->
+                                </select>
+
+                                <div class="audio-preview-container">
+                                    <span class="preview-label">Preview Preset:</span>
+                                    <audio id="preset-audio-player" controls src=""></audio>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Upload Tab -->
+                        <div class="tab-panel" id="panel-upload">
+                            <div class="upload-dropzone" id="dropzone" onclick="triggerFileInput()">
+                                <i class="fa-solid fa-file-audio upload-icon"></i>
+                                <p class="upload-text">Drag & drop your WAV file here or <span>browse</span></p>
+                                <p class="upload-hint">Supports WAV (mono/stereo, recommended 5-15s)</p>
+                                <input type="file" id="file-input" accept="audio/wav,audio/x-wav" style="display: none;" onchange="handleFileSelect(event)">
+                            </div>
+                            <div class="file-info-card" id="file-info-container" style="display: none;">
+                                <div class="file-details">
+                                    <i class="fa-solid fa-file-wave-form file-icon"></i>
+                                    <div class="file-meta">
+                                        <p class="file-name" id="uploaded-file-name">filename.wav</p>
+                                        <p class="file-size" id="uploaded-file-size">0 KB</p>
+                                    </div>
+                                    <button class="remove-file-btn" onclick="clearUploadedFile()" title="Remove file">
+                                        <i class="fa-solid fa-xmark"></i>
+                                    </button>
+                                </div>
+                                <audio id="upload-audio-player" class="mini-player" controls src=""></audio>
+                            </div>
+                        </div>
+
+
+                    </div>
+                </div>
+
+                <div class="form-group border-top">
+                    <div class="checkbox-wrapper-33">
+                        <label class="checkbox-container">
+                            <input type="checkbox" id="auto-transcribe" checked onchange="toggleRefTextInput()">
+                            <span class="checkbox-checkmark"></span>
+                            Auto-transcribe reference audio using Whisper model (Recommended)
+                        </label>
+                    </div>
+                </div>
+
+                <div class="form-group" id="ref-text-group" style="display: none;">
+                    <label for="ref-text">Reference Script (Exact words spoken in the audio)</label>
+                    <textarea id="ref-text" placeholder="ระบุสคริปต์ที่พูดในเสียงอ้างอิงให้ตรงเป๊ะ (ภาษาไทยหรืออังกฤษ)" rows="2"></textarea>
+                </div>
+            </section>
+
+            <!-- Right Side: Generation Result -->
+            <section class="panel-card output-panel" aria-labelledby="output-title">
+                <div class="panel-header">
+                    <i class="fa-solid fa-wave-square header-icon"></i>
+                    <h2 id="output-title">Generated Audio</h2>
+                </div>
+
+                <div class="output-content-wrapper">
+                    <!-- CTA Button -->
+                    <button class="generate-btn" id="generate-voice-btn" onclick="startGeneration()">
+                        <span class="btn-text">Generate Speech</span>
+                        <i class="fa-solid fa-play btn-icon"></i>
+                    </button>
+
+                    <!-- Loading / Progress State -->
+                    <div class="progress-container" id="progress-container" style="display: none;">
+                        <div class="loader-spinner">
+                            <div class="spinner-ring"></div>
+                            <i class="fa-solid fa-volume-high loader-icon"></i>
+                        </div>
+                        <h3 class="progress-title">
+                            <span id="progress-status-title">Processing Request</span>
+                            <span class="loading-dots"><span>.</span><span>.</span><span>.</span></span>
+                        </h3>
+                        <p class="progress-sub" id="progress-status-sub">This may take up to 2 minutes on CPU.</p>
+                        
+                        <div class="progress-steps">
+                            <div class="step-item" id="step-enhance">
+                                <span class="step-dot"></span>
+                                <span class="step-name">Ref Enhancement</span>
+                            </div>
+                            <div class="step-item" id="step-whisper">
+                                <span class="step-dot"></span>
+                                <span class="step-name">Transcription</span>
+                            </div>
+                            <div class="step-item" id="step-f5">
+                                <span class="step-dot"></span>
+                                <span class="step-name">F5-TTS Inference</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Empty State -->
+                    <div class="empty-state" id="empty-state-view">
+                        <i class="fa-solid fa-volume-xmark empty-icon"></i>
+                        <p>No audio generated yet</p>
+                        <span>Fill in the target script and configure your reference voice to synthesize realistic Thai speech.</span>
+                    </div>
+
+                    <!-- Output Card (WAV player & Download & Visualizer) -->
+                    <div class="result-card" id="result-card-view" style="display: none;">
+                        <div class="result-audio-wrapper">
+                            <div class="custom-player">
+                                <audio id="output-audio-player" src="" onplay="onAudioPlay()" onpause="onAudioPause()" onended="onAudioEnded()"></audio>
+                                <div class="player-controls">
+                                    <button class="player-btn play-pause-btn" id="player-play-btn" onclick="toggleOutputAudio()">
+                                        <i class="fa-solid fa-play" id="play-icon"></i>
+                                    </button>
+                                    <div class="player-time-rail" id="player-time-rail" onclick="seekAudio(event)">
+                                        <div class="player-progress-bar" id="player-progress-bar"></div>
+                                    </div>
+                                    <div class="player-time-display">
+                                        <span id="current-time">00:00</span> / <span id="duration-time">00:00</span>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="result-actions">
+                                <a id="download-wav-btn" href="" download="f5_generated.wav" class="action-btn download-btn">
+                                    <i class="fa-solid fa-download"></i> Download WAV
+                                </a>
+                            </div>
+                        </div>
+
+                        <!-- Visualizer Area -->
+                        <div class="visualizer-wrapper">
+                            <canvas id="waveform-visualizer"></canvas>
+                            <div class="visualizer-overlay" id="visualizer-fallback">
+                                <span>Press Play to Visualise Audio Waveform</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

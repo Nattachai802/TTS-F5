@@ -1,8 +1,11 @@
 import os
 import sys
 import torch
+import base64
+import uuid
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
 from pathlib import Path
@@ -11,7 +14,6 @@ from transformers import pipeline
 from pedalboard.io import AudioFile
 from pedalboard import Pedalboard, NoiseGate, Compressor, LowShelfFilter, Gain, HighpassFilter, HighShelfFilter
 import noisereduce as nr
-from emotion_blender import EmotionBlender
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 thonburian_path = os.path.join(current_dir, "thonburian-tts")
@@ -31,52 +33,9 @@ class TTSRequest(BaseModel):
     text: str
     voice: Optional[str] = None
     ref_text: Optional[str] = None
-    emotion: Optional[str] = "neutral"         # neutral/happiness/sadness/anger/frustration
-    gender: Optional[str] = "female"           # female/male
-    use_emotion_ref: Optional[bool] = False    # True = เปิด emotion mode
-    emotion_strength: Optional[float] = 0.5   # 0.0–1.0 ความแรงของ emotion effect
 
 
-class EmotionRefLibrary:
-    SUPPORTED_EMOTIONS = ["neutral", "happiness", "sadness", "anger", "frustration"]
 
-    def __init__(self, refs_dir: str):
-        self.refs_dir = Path(refs_dir)
-        available = self._scan()
-        print(f"EmotionRefLibrary loaded from: {self.refs_dir}")
-        print(f"  Available refs: {available}")
-
-    def _scan(self) -> list:
-        found = []
-        for emo in self.SUPPORTED_EMOTIONS:
-            for gender in ["female", "male"]:
-                p = self.refs_dir / emo / f"{gender}_best.wav"
-                if p.exists():
-                    found.append(f"{emo}/{gender}")
-        return found
-
-    def get_ref_path(self, emotion: str, gender: str = "female") -> Optional[str]:
-        """คืน path ของ emotion ref — None ถ้าไม่พบ"""
-        emotion = emotion.lower().strip()
-        gender = gender.lower().strip()
-        if emotion not in self.SUPPORTED_EMOTIONS:
-            print(f"[EmotionRefLibrary] Unknown emotion '{emotion}', falling back to neutral")
-            emotion = "neutral"
-        path = self.refs_dir / emotion / f"{gender}_best.wav"
-        if path.exists():
-            return str(path)
-        # fallback: ลอง gender อื่น
-        for fallback_gender in ["female", "male"]:
-            fb = self.refs_dir / emotion / f"{fallback_gender}_best.wav"
-            if fb.exists():
-                print(f"[EmotionRefLibrary] Fallback to {emotion}/{fallback_gender}")
-                return str(fb)
-        # fallback: neutral
-        neutral = self.refs_dir / "neutral" / "female_best.wav"
-        if neutral.exists():
-            print(f"[EmotionRefLibrary] Fallback to neutral/female")
-            return str(neutral)
-        return None
 
 # Constants
 CHECKPOINT = "hf://biodatlab/ThonburianTTS/megaF5/mega_f5_last.safetensors"
@@ -135,13 +94,6 @@ tts_pipeline = FlowTTSPipeline(
 )
 print("Models loaded successfully!")
 
-# โหลด Emotion Ref Library (ไม่ crash ถ้า assets ยังไม่พร้อม)
-emotion_lib = EmotionRefLibrary(
-    refs_dir=os.path.join(current_dir, "assets", "emotion_refs")
-)
-
-# EmotionBlender — ปรับ prosody ของ user audio
-emotion_blender = EmotionBlender()
 
 def post_process_output(audio_path: str) -> None:
     """
@@ -179,6 +131,10 @@ async def generate_tts(data: TTSRequest):
     if not gen_text:
         raise HTTPException(status_code=400, detail="Missing 'text' parameter in JSON body")
 
+    gen_text = gen_text.strip()
+    if not gen_text.endswith(('.', '!', '?', '。')):
+        gen_text += '.'
+
     temp_dir = tempfile.mkdtemp()
 
     # ===== หา user voice path =====
@@ -192,66 +148,45 @@ async def generate_tts(data: TTSRequest):
     if not os.path.exists(user_voice_path):
         raise HTTPException(status_code=404, detail=f"Voice file not found: {user_voice_path}")
 
-    # ===== EMOTION BLEND MODE =====
-    # มี user voice + เปิด emotion → blend prosody ของ user ก่อนส่ง F5
-    if data.use_emotion_ref and data.emotion != "neutral":
-        try:
-            print(f"[Emotion blend] emotion={data.emotion} strength={data.emotion_strength}")
-            blended_audio, blended_sr = emotion_blender.blend(
-                user_audio_path=user_voice_path,
-                emotion=data.emotion,
-                strength=data.emotion_strength,
-            )
-            blended_path = os.path.join(temp_dir, "blended_ref.wav")
-            emotion_blender.save(blended_audio, blended_sr, blended_path)
-            ref_audio_path = blended_path
-        except Exception as e:
-            print(f"[Emotion blend] failed: {e}. Falling back to user voice.")
-            ref_audio_path = user_voice_path
+    ref_audio_path = user_voice_path
 
-    # ===== PURE EMOTION REF MODE (ไม่มี voice / neutral) =====
-    elif data.use_emotion_ref:
-        emotion_ref_path = emotion_lib.get_ref_path(data.emotion, data.gender)
-        if not emotion_ref_path:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Emotion ref not found for emotion='{data.emotion}' gender='{data.gender}'. "
-                       "Run scripts/prepare_emotion_refs.py first."
-            )
-        ref_audio_path = emotion_ref_path
-        print(f"[Pure emotion ref] Using: {ref_audio_path}")
+    # ===== ENHANCE AUDIO (Noise Reduction & EQ) =====
+    enhanced_audio_path = os.path.join(temp_dir, "enhanced_ref.wav")
+    try:
+        print(f"Enhancing audio for: {ref_audio_path}")
+        sr = 44100
+        with AudioFile(ref_audio_path).resampled_to(sr) as f:
+            audio = f.read(f.frames)
 
-    # ===== NORMAL VOICE MODE =====
-    else:
-        ref_audio_path = user_voice_path
-        # ===== ENHANCE AUDIO (normal mode only) =====
-        enhanced_audio_path = os.path.join(temp_dir, "enhanced_ref.wav")
-        try:
-            print(f"Enhancing audio for: {ref_audio_path}")
-            sr = 44100
-            with AudioFile(ref_audio_path).resampled_to(sr) as f:
-                audio = f.read(f.frames)
+        reduced_noise = nr.reduce_noise(y=audio, sr=sr, stationary=True, prop_decrease=0.75)
 
-            reduced_noise = nr.reduce_noise(y=audio, sr=sr, stationary=True, prop_decrease=0.75)
+        board = Pedalboard([
+            HighpassFilter(cutoff_frequency_hz=80.0),                                        # ตัด sub-bass rumble
+            NoiseGate(threshold_db=-35, ratio=2.5, release_ms=200),                         # gate แน่นขึ้น
+            Compressor(threshold_db=-14, ratio=2.5, attack_ms=10.0, release_ms=150.0),
+            LowShelfFilter(cutoff_frequency_hz=300.0, gain_db=-3.0, q=0.7),                 # cut low end แทน boost
+            Gain(gain_db=2)
+        ])
 
-            board = Pedalboard([
-                HighpassFilter(cutoff_frequency_hz=80.0),                                        # ตัด sub-bass rumble
-                NoiseGate(threshold_db=-35, ratio=2.5, release_ms=200),                         # gate แน่นขึ้น
-                Compressor(threshold_db=-14, ratio=2.5, attack_ms=10.0, release_ms=150.0),
-                LowShelfFilter(cutoff_frequency_hz=300.0, gain_db=-3.0, q=0.7),                 # cut low end แทน boost
-                Gain(gain_db=2)
-            ])
+        effected = board(reduced_noise, sr)
 
-            effected = board(reduced_noise, sr)
+        import numpy as np
+        silence_sec = 2.0
+        silence_samples = int(silence_sec * sr)
+        if effected.ndim == 1:
+            silence = np.zeros(silence_samples, dtype=np.float32)
+            effected = np.concatenate([effected, silence])
+        elif effected.ndim == 2:
+            silence = np.zeros((effected.shape[0], silence_samples), dtype=np.float32)
+            effected = np.concatenate([effected, silence], axis=1)
 
-            with AudioFile(enhanced_audio_path, 'w', sr, effected.shape[0]) as f:
-                f.write(effected)
+        with AudioFile(enhanced_audio_path, 'w', sr, effected.shape[0]) as f:
+            f.write(effected)
 
-            ref_audio_path = enhanced_audio_path
-            print(f"Audio enhanced → {enhanced_audio_path}")
-        except Exception as e:
-            print(f"Audio enhancement failed: {str(e)}. Proceeding with original audio.")
-        # ==========================================
+        ref_audio_path = enhanced_audio_path
+        print(f"Audio enhanced → {enhanced_audio_path}")
+    except Exception as e:
+        print(f"Audio enhancement failed: {str(e)}. Proceeding with original audio.")
 
     ref_text = data.ref_text
 
@@ -272,7 +207,6 @@ async def generate_tts(data: TTSRequest):
     if not ref_text:
         raise HTTPException(status_code=400, detail="Could not transcribe reference audio")
 
-    temp_dir = tempfile.mkdtemp()
     output_audio_path = os.path.join(temp_dir, "generated.wav")
 
     try:
@@ -289,6 +223,71 @@ async def generate_tts(data: TTSRequest):
         return FileResponse(output_audio_path, media_type='audio/wav', filename="generated.wav")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"TTS Inference failed: {str(e)}")
+
+class UploadRequest(BaseModel):
+    filename: str
+    file_data: str
+
+@app.get('/api/presets')
+async def get_presets():
+    presets = {}
+    ref_dir = os.path.join(current_dir, "assets", "emotion_refs")
+    if os.path.exists(ref_dir):
+        for emotion in os.listdir(ref_dir):
+            emo_path = os.path.join(ref_dir, emotion)
+            if os.path.isdir(emo_path):
+                wavs = [f for f in os.listdir(emo_path) if f.endswith('.wav')]
+                presets[emotion] = [
+                    {
+                        "name": wav,
+                        "path": os.path.abspath(os.path.join(emo_path, wav)),
+                        "url": f"/assets/emotion_refs/{emotion}/{wav}"
+                    }
+                    for wav in sorted(wavs)
+                ]
+    return JSONResponse(content={
+        "presets": presets,
+        "default": {
+            "name": "000000.wav",
+            "path": os.path.abspath(os.path.join(current_dir, "thonburian-tts", "assets", "000000.wav")),
+            "url": "/thonburian-assets/000000.wav"
+        }
+    })
+
+@app.post('/api/upload-ref-audio')
+async def upload_ref_audio(data: UploadRequest):
+    try:
+        header, encoded = data.file_data.split(",", 1) if "," in data.file_data else ("", data.file_data)
+        file_bytes = base64.b64decode(encoded)
+        
+        temp_dir = os.path.join(current_dir, "temp_f5", "uploads")
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        ext = os.path.splitext(data.filename)[1] or ".wav"
+        unique_name = f"{uuid.uuid4()}{ext}"
+        save_path = os.path.join(temp_dir, unique_name)
+        
+        with open(save_path, "wb") as f:
+            f.write(file_bytes)
+            
+        return JSONResponse(content={"path": save_path})
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Upload failed: {str(e)}")
+
+# Serve static UI files
+static_dir = os.path.join(current_dir, "static")
+os.makedirs(static_dir, exist_ok=True)
+
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
+app.mount("/assets", StaticFiles(directory=os.path.join(current_dir, "assets")), name="assets")
+app.mount("/thonburian-assets", StaticFiles(directory=os.path.join(current_dir, "thonburian-tts", "assets")), name="thonburian-assets")
+
+@app.get("/")
+async def read_index():
+    index_file = os.path.join(static_dir, "index.html")
+    if os.path.exists(index_file):
+        return FileResponse(index_file)
+    return PlainTextResponse("UI files are not generated yet.", status_code=404)
 
 if __name__ == '__main__':
     os.makedirs(os.path.join(current_dir, "temp_f5"), exist_ok=True)
