@@ -3,6 +3,7 @@ venv/
 __pycache__/
 *.pyc
 temp_f5/
+hf_cache/
 .ipynb_checkpoints/
 *.ipynb
 ThonburianTTS_Demo.ipynb
