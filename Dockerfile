@@ -10,12 +10,12 @@ WORKDIR /app
 
 # ติดตั้ง PyTorch แบบ CPU-only (เล็กกว่า GPU version มาก: ~200MB vs ~2GB)
 # สำหรับ EC2 ที่ไม่มี GPU เช่น t3.small
-RUN pip install --no-cache-dir torch torchvision torchaudio \
+RUN pip install --no-cache-dir --timeout 120 --retries 10 torch torchvision torchaudio \
     --index-url https://download.pytorch.org/whl/cpu
 
 # คัดลอกและติดตั้ง Python dependencies ที่เหลือ
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --timeout 120 --retries 10 -r requirements.txt
 
 # คัดลอกโค้ดทั้งหมด (รวมถึงโฟลเดอร์ thonburian-tts)
 COPY . .
