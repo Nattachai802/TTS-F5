@@ -3,11 +3,9 @@ uvicorn
 f5-tts
 sounddevice
 wavio
-ipywebrtc
-notebook
-torch
-torchvision
 noisereduce
 pedalboard
 librosa
 soundfile
+# torch / torchvision ติดตั้งแยกใน Dockerfile แบบ CPU-only (อย่าใส่ที่นี่ จะทับ CPU version)
+# ipywebrtc / notebook เอาออก — main.py ไม่ได้ใช้ ช่วยลดขนาด image + RAM

@@ -8,11 +8,5 @@ services:
       - "5000:5000"
     volumes:
       - ./temp_f5:/app/temp_f5
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+      - ./hf_cache:/root/.cache/huggingface   # cache model ไว้ ไม่ต้องโหลดซ้ำทุก restart
     restart: unless-stopped

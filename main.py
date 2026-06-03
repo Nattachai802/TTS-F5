@@ -1,11 +1,15 @@
 import os
 import sys
+import shutil
 import torch
 import base64
 import uuid
+import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.background import BackgroundTasks
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from typing import Optional
 from pathlib import Path
@@ -79,7 +83,7 @@ audio_config = AudioConfig(
     silence_threshold=-45,
     max_audio_length=20000,
     cfg_strength=1.5,
-    nfe_step=64,
+    nfe_step=32,
     target_rms=0.12,
     cross_fade_duration=0.10,
     speed=0.92,
@@ -95,6 +99,16 @@ tts_pipeline = FlowTTSPipeline(
 )
 print("Models loaded successfully!")
 
+# ---------- In-memory caches ----------
+# key: original voice file path → value: path ของ enhanced audio ที่ process แล้ว
+_enhanced_audio_cache: dict[str, str] = {}
+# key: enhanced audio path → value: transcription text
+_transcription_cache: dict[str, str] = {}
+# โฟลเดอร์ถาวรสำหรับเก็บ enhanced audio (ไม่ถูกลบหลัง request)
+_CACHE_DIR = os.path.join(current_dir, "temp_f5", "cache")
+os.makedirs(_CACHE_DIR, exist_ok=True)
+# --------------------------------------
+
 
 def post_process_output(audio_path: str) -> None:
     """
@@ -102,7 +116,6 @@ def post_process_output(audio_path: str) -> None:
     เป้าหมาย: normalize + warm EQ เบาๆ โดยไม่กระทบ intonation
     """
     target_sr = 24000
-    import numpy as np
 
     with AudioFile(audio_path).resampled_to(target_sr) as f:
         audio = f.read(f.frames)
@@ -117,7 +130,7 @@ def post_process_output(audio_path: str) -> None:
 
     processed = board(audio, sr)
 
-    peak = np.max(np.abs(processed))
+    peak = np.max(np.abs(processed))  # np imported at top-level
     if peak > 0:
         target_peak = 10 ** (-1.0 / 20)
         processed = processed * (target_peak / peak)
@@ -137,7 +150,14 @@ async def generate_tts(data: TTSRequest):
         gen_text += '.'
 
     temp_dir = tempfile.mkdtemp()
+    background_tasks = BackgroundTasks()
+    background_tasks.add_task(shutil.rmtree, temp_dir, True)
+    # รัน blocking work (TTS, Whisper, noise reduction) ใน threadpool
+    # เพื่อไม่ให้ block event loop → request อื่นยังตอบสนองได้
+    return await run_in_threadpool(_generate_tts_impl, data, gen_text, temp_dir, background_tasks)
 
+
+def _generate_tts_impl(data: TTSRequest, gen_text: str, temp_dir: str, background_tasks: BackgroundTasks):
     # ===== หา user voice path =====
     voice_file = data.voice
     if voice_file:
@@ -151,59 +171,69 @@ async def generate_tts(data: TTSRequest):
 
     ref_audio_path = user_voice_path
 
-    # ===== ENHANCE AUDIO (Noise Reduction & EQ) =====
-    enhanced_audio_path = os.path.join(temp_dir, "enhanced_ref.wav")
-    try:
-        print(f"Enhancing audio for: {ref_audio_path}")
-        sr = 44100
-        with AudioFile(ref_audio_path).resampled_to(sr) as f:
-            audio = f.read(f.frames)
+    # ===== ENHANCE AUDIO (Noise Reduction & EQ) — with cache =====
+    if user_voice_path in _enhanced_audio_cache and os.path.exists(_enhanced_audio_cache[user_voice_path]):
+        ref_audio_path = _enhanced_audio_cache[user_voice_path]
+        print(f"[Cache HIT] Enhanced audio: {ref_audio_path}")
+    else:
+        # เก็บในโฟลเดอร์ถาวร ไม่ใช่ temp_dir เพื่อให้ cache ใช้ได้ข้าม request
+        cache_name = uuid.uuid4().hex + "_enhanced.wav"
+        enhanced_audio_path = os.path.join(_CACHE_DIR, cache_name)
+        try:
+            print(f"[Cache MISS] Enhancing audio for: {ref_audio_path}")
+            sr = 44100
+            with AudioFile(ref_audio_path).resampled_to(sr) as f:
+                audio = f.read(f.frames)
 
-        reduced_noise = nr.reduce_noise(y=audio, sr=sr, stationary=True, prop_decrease=0.75)
+            reduced_noise = nr.reduce_noise(y=audio, sr=sr, stationary=True, prop_decrease=0.75)
 
-        board = Pedalboard([
-            HighpassFilter(cutoff_frequency_hz=80.0),                                        # ตัด sub-bass rumble
-            NoiseGate(threshold_db=-35, ratio=2.5, release_ms=200),                         # gate แน่นขึ้น
-            Compressor(threshold_db=-14, ratio=2.5, attack_ms=10.0, release_ms=150.0),
-            LowShelfFilter(cutoff_frequency_hz=300.0, gain_db=-3.0, q=0.7),                 # cut low end แทน boost
-            Gain(gain_db=2)
-        ])
+            board = Pedalboard([
+                HighpassFilter(cutoff_frequency_hz=80.0),                                        # ตัด sub-bass rumble
+                NoiseGate(threshold_db=-35, ratio=2.5, release_ms=200),                         # gate แน่นขึ้น
+                Compressor(threshold_db=-14, ratio=2.5, attack_ms=10.0, release_ms=150.0),
+                LowShelfFilter(cutoff_frequency_hz=300.0, gain_db=-3.0, q=0.7),                 # cut low end แทน boost
+                Gain(gain_db=2)
+            ])
 
-        effected = board(reduced_noise, sr)
+            effected = board(reduced_noise, sr)
 
-        import numpy as np
-        silence_sec = 2.0
-        silence_samples = int(silence_sec * sr)
-        if effected.ndim == 1:
-            silence = np.zeros(silence_samples, dtype=np.float32)
-            effected = np.concatenate([effected, silence])
-        elif effected.ndim == 2:
-            silence = np.zeros((effected.shape[0], silence_samples), dtype=np.float32)
-            effected = np.concatenate([effected, silence], axis=1)
+            silence_sec = 2.0
+            silence_samples = int(silence_sec * sr)
+            if effected.ndim == 1:
+                silence = np.zeros(silence_samples, dtype=np.float32)
+                effected = np.concatenate([effected, silence])
+            elif effected.ndim == 2:
+                silence = np.zeros((effected.shape[0], silence_samples), dtype=np.float32)
+                effected = np.concatenate([effected, silence], axis=1)
 
-        with AudioFile(enhanced_audio_path, 'w', sr, effected.shape[0]) as f:
-            f.write(effected)
+            with AudioFile(enhanced_audio_path, 'w', sr, effected.shape[0]) as f:
+                f.write(effected)
 
-        ref_audio_path = enhanced_audio_path
-        print(f"Audio enhanced → {enhanced_audio_path}")
-    except Exception as e:
-        print(f"Audio enhancement failed: {str(e)}. Proceeding with original audio.")
+            _enhanced_audio_cache[user_voice_path] = enhanced_audio_path
+            ref_audio_path = enhanced_audio_path
+            print(f"Audio enhanced → {enhanced_audio_path}")
+        except Exception as e:
+            print(f"Audio enhancement failed: {str(e)}. Proceeding with original audio.")
 
     ref_text = data.ref_text
 
     if not ref_text:
-        try:
-            print("Transcribing reference audio...")
-            import numpy as np
-            with AudioFile(ref_audio_path).resampled_to(16000) as f:
-                audio_data = f.read(f.frames)
-                if audio_data.ndim > 1:
-                    audio_data = np.mean(audio_data, axis=0) if audio_data.shape[0] > 1 else audio_data[0]
-            output = whisper_pipe({"sampling_rate": 16000, "raw": audio_data})
-            ref_text = output["text"]
-            print(f"Transcribed ref_text: {ref_text}")
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+        if ref_audio_path in _transcription_cache:
+            ref_text = _transcription_cache[ref_audio_path]
+            print(f"[Cache HIT] Transcription: {ref_text}")
+        else:
+            try:
+                print(f"[Cache MISS] Transcribing reference audio...")
+                with AudioFile(ref_audio_path).resampled_to(16000) as f:
+                    audio_data = f.read(f.frames)
+                    if audio_data.ndim > 1:
+                        audio_data = np.mean(audio_data, axis=0) if audio_data.shape[0] > 1 else audio_data[0]
+                output = whisper_pipe({"sampling_rate": 16000, "raw": audio_data})
+                ref_text = output["text"]
+                _transcription_cache[ref_audio_path] = ref_text
+                print(f"Transcribed ref_text: {ref_text}")
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
             
     if not ref_text:
         raise HTTPException(status_code=400, detail="Could not transcribe reference audio")
@@ -227,7 +257,6 @@ async def generate_tts(data: TTSRequest):
                 check_duration=True
             )
         else:
-            import numpy as np
             combined_audio = None
             sr = 24000
             
@@ -268,7 +297,7 @@ async def generate_tts(data: TTSRequest):
                 f.write(combined_audio)
                 
         post_process_output(output_audio_path)
-        return FileResponse(output_audio_path, media_type='audio/wav', filename="generated.wav")
+        return FileResponse(output_audio_path, media_type='audio/wav', filename="generated.wav", background=background_tasks)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"TTS Inference failed: {str(e)}")
 
