@@ -10,7 +10,7 @@ WORKDIR /app
 
 # ติดตั้ง PyTorch แบบ CPU-only (เล็กกว่า GPU version มาก: ~200MB vs ~2GB)
 # สำหรับ EC2 ที่ไม่มี GPU เช่น t3.small
-RUN pip install --no-cache-dir torch torchvision \
+RUN pip install --no-cache-dir torch torchvision torchaudio \
     --index-url https://download.pytorch.org/whl/cpu
 
 # คัดลอกและติดตั้ง Python dependencies ที่เหลือ

@@ -355,9 +355,15 @@ async def upload_ref_audio(data: UploadRequest):
 static_dir = os.path.join(current_dir, "static")
 os.makedirs(static_dir, exist_ok=True)
 
+# สร้างโฟลเดอร์ assets ให้แน่ใจว่ามีอยู่ก่อน mount (กัน crash ตอน clone ที่ไม่มี assets)
+assets_dir = os.path.join(current_dir, "assets")
+os.makedirs(os.path.join(assets_dir, "emotion_refs"), exist_ok=True)
+thonburian_assets_dir = os.path.join(current_dir, "thonburian-tts", "assets")
+os.makedirs(thonburian_assets_dir, exist_ok=True)
+
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
-app.mount("/assets", StaticFiles(directory=os.path.join(current_dir, "assets")), name="assets")
-app.mount("/thonburian-assets", StaticFiles(directory=os.path.join(current_dir, "thonburian-tts", "assets")), name="thonburian-assets")
+app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+app.mount("/thonburian-assets", StaticFiles(directory=thonburian_assets_dir), name="thonburian-assets")
 
 @app.get("/")
 async def read_index():
