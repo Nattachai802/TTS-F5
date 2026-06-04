@@ -61,10 +61,7 @@ whisper_pipe = pipeline(
     model="biodatlab/whisper-th-medium-combined",
     chunk_length_s=30,
     device=device,
-)
-whisper_pipe.model.config.forced_decoder_ids = whisper_pipe.tokenizer.get_decoder_prompt_ids(
-    language="th",
-    task="transcribe"
+    generate_kwargs={"language": "th", "task": "transcribe"},
 )
 
 print("Loading FlowTTSPipeline...")
